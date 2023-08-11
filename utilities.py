@@ -39,6 +39,27 @@ class ReplayBuffer:
     def clear(self):
         self.states, self.actions, self.rewards, self.states_, self.dones = [], [], [], [], []
 
+    def get_buffer(self, batch_size, randomized=True, cleared=False, return_bracket=False):
+        assert batch_size <= self.max_size + 1
+        indices = np.arange(self.get_buffer_size())
+        if randomized:
+            np.random.shuffle(indices)
+        buffer_states = np.squeeze([self.states[i] for i in indices][0: batch_size])
+        buffer_actions = [self.actions[i] for i in indices][0: batch_size]
+        buffer_rewards = [self.rewards[i] for i in indices][0: batch_size]
+        buffer_states_ = np.squeeze([self.states_[i] for i in indices][0: batch_size])
+        buffer_dones = [self.dones[i] for i in indices][0: batch_size]
+        if cleared:
+            self.clear()
+        if return_bracket:
+            for i in range(batch_size):
+                buffer_actions[i] = np.array(buffer_actions[i])
+                buffer_rewards[i] = np.array([buffer_rewards[i]])
+                buffer_dones[i] = np.array([buffer_dones[i]])
+            return np.array(buffer_states), np.array(buffer_actions), np.array(buffer_rewards), np.array(buffer_states_), np.array(buffer_dones)
+            # return tuple(np.array(buffer_states)), tuple(np.array(buffer_actions)), tuple(np.array(buffer_rewards)), tuple(np.array(buffer_states_)), tuple(np.array(buffer_dones))
+        return np.array(buffer_states), np.array(buffer_actions), np.array(buffer_rewards), np.array(buffer_states_), np.array(buffer_dones)
+
 
 class ReplayBufferZeros:
 
