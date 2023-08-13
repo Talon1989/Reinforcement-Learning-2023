@@ -216,11 +216,89 @@ class SAC:
         action = np.tanh(distribution.sample())
         return action * self.max_action
 
-    def _store_transition(self, s, a ,r ,s_, d):
+    def _store(self, s, a, r, s_, d):
         self.buffer.remember(s, a, r, s_, d)
 
     def _train(self):
-        pass
+
+        if self.buffer.get_buffer_size() < self.batch_size:
+            return
+
+        states, actions, rewards, states_, dones = self.buffer.get_buffer(
+            batch_size=self.batch_size, randomized=True, cleared=False
+        )
+        rewards = np.reshape(rewards, [-1, 1])
+        dones = np.reshape(dones, [-1, 1])
+
+        with tf.GradientTape() as actor_tape:
+            means, log_stds = self.actor(states)
+            stds = tf.exp(log_stds)
+            distributions = tfp.distributions.Normal(loc=means, scale=stds)
+            samples = distributions.sample()
+            sampled_actions = tf.tanh(samples)
+            log_prob = distributions.log_prob(samples) - tf.math.log(1. - tf.pow(sampled_actions, 2) + 1e-16)
+            log_prob = tf.reduce_mean(log_prob, axis=-1, keepdims=True)
+            q_1_values = self.q_1([states, sampled_actions])
+            q_2_values = self.q_2([states, sampled_actions])
+            actor_loss = - tf.reduce_mean(
+                q_1_values - (self.temperature * log_prob)
+            )
+        actor_grads = actor_tape.gradient(actor_loss, self.actor.trainable_variables)
+        self.actor.optimizer.apply_gradients(zip(actor_grads, self.actor.trainable_variables))
+
+        q_values = tf.math.minimum(q_1_values, q_2_values)
+        with tf.GradientTape() as v_tape:
+            state_values = self.v(states)
+            q_state_values = tf.stop_gradient(q_values - self.temperature * log_prob)
+            v_loss = self.q_and_v_loss(q_state_values, state_values)
+        v_grads = v_tape.gradient(v_loss, self.v.trainable_variables)
+        self.v.optimizer.apply_gradients(zip(v_grads, self.v.trainable_variables))
+
+        q_hat = rewards + self.gamma * tf.stop_gradient(self.target_v(states_)) * (1 - dones)
+        with tf.GradientTape() as q_1_tape:
+            q_1_preds = self.q_1([states, actions])
+            q_1_loss = self.q_and_v_loss(q_1_preds, q_hat)  # check if issues
+        q_1_grads = q_1_tape.gradient(q_1_loss, self.q_1.trainable_variables)
+        self.q_1.optimizer.apply_gradients(zip(q_1_grads, self.q_1.trainable_variables))
+        with tf.GradientTape() as q_2_tape:
+            q_2_preds = self.q_2([states, actions])
+            q_2_loss = self.q_and_v_loss(q_2_preds, q_hat)  # check if issues
+        q_2_grads = q_2_tape.gradient(q_2_loss, self.q_2.trainable_variables)
+        self.q_2.optimizer.apply_gradients(zip(q_2_grads, self.q_2.trainable_variables))
+
+        self._update_target_v()
+
+    def fit(self, n_episodes=2_000, graph=True):
+        scores, avg_scores = [], []
+        max_steps = self.env._max_episode_steps
+        consecutive_solves = 0
+        for ep in range(1, n_episodes+1):
+            score = 0
+            s = self.env.reset()[0]
+            for i in range(max_steps):
+                a = self._choose_action(s)
+                s_, r, d, t, _ = self.env.step(a)
+                self._store(s, a, r, s_, d)
+                score += r
+                self._train()
+                if d or t:
+                    if i >= max_steps - 1:
+                        consecutive_solves += 1
+                    else:
+                        consecutive_solves = 0
+                    break
+                s = s_
+            # if consecutive_solves == 5:
+            #     print('Environment solved.')
+            #     return
+            scores.append(score)
+            avg_scores.append(np.sum(scores[-50:]) / len(scores[-50:]))
+            print('Episode %d | Score %.3f | Avg Score %.3f' % (ep, scores[-1], avg_scores[-1]))
+            if ep % 20 == 0 and graph:
+                utilities.print_graph(scores, avg_scores, 'scores', 'avg scores', 'Ep %d ' % ep)
+        return self
+
+
 
 
 
